@@ -13,62 +13,85 @@ FACTORS = [
 
 
 class Stock:
-    def __init__(self, name, df_price: pd.DataFrame, df_stats: pd.DataFrame = None):
+    def __init__(self, name, df_price: pd.DataFrame, df_stats: pd.DataFrame):
         self.name = name
         self.df = df_price
-        self.dfStat = df_stats
+        self.dfStatRaw = df_stats.sort_values(by="Date").dropna()
+        self.dfStat = self.interpolateStats(self.dfStatRaw)
 
     def __str__(self):
         return self.name
 
-    def calcFactor(self, factor, currentTime):
-        dfTime = self.df[self.df["Date"] <= pd.to_datetime(currentTime)].tail(1)
-        dfStatTime = self.dfStat[self.dfStat.Date <= pd.to_datetime(currentTime)].tail(
-            1
+    # Calculate the factor score for a given time
+    def calcFactor(self, factor, currentTime, timeFrame):
+        dfTime = self.df[self.df["Date"] <= pd.to_datetime(currentTime)].tail(
+            timeFrame + 1
         )
+        dfStatTime = self.dfStat[
+            self.dfStat["Date"] <= pd.to_datetime(currentTime)
+        ].tail(timeFrame + 1)
         if factor == "size":
-            return dfStatTime["SIZE"]
+            return dfStatTime["SIZE"].to_numpy()
         elif factor == "valuation":
-            return dfStatTime["PBR"].mean()
+            return dfStatTime["PBR"].to_numpy()
         elif factor == "profitability":
-            return dfStatTime["ROE"].mean()
+            return dfStatTime["ROE"].to_numpy()
         elif factor == "growth":
-            return dfStatTime["GROWTH"].mean()
+            return dfStatTime["GROWTH"].to_numpy()
         elif factor == "quality":
-            return dfStatTime["Current Ratio"].mean()
+            return dfStatTime["Current Ratio"].to_numpy()
         elif factor == "liquidity":
-            return dfTime["ILLIQ"].mean()
+            return dfTime["ILLIQ"]
         elif factor == "momentum_and_reversal":
-            return (
-                self.df[self.df["Date"] <= pd.to_datetime(currentTime)]
-                .tail(1)
-                .iloc[0]["Close"]
-                - self.df[
-                    self.df["Date"]
-                    <= pd.to_datetime(currentTime) - pd.Timedelta(60, unit="d")
+            return np.array(
+                [
+                    self.df[self.df["Date"] <= time].tail(1).iloc[0]["Close"]
+                    - self.df[self.df["Date"] <= time - pd.Timedelta(60, unit="d")]
+                    .tail(1)
+                    .iloc[0]["Close"]
+                    for time in pd.date_range(
+                        start=pd.to_datetime(currentTime)
+                        - pd.Timedelta(timeFrame, unit="d"),
+                        end=pd.to_datetime(currentTime),
+                        freq="D",
+                    )
                 ]
-                .tail(1)
-                .iloc[0]["Close"]
             )
         else:
             return None
 
+    # Calculate the return for a given time
     def calcReturn(self, currentTime, timeFrame):
-        return (
-            self.df[self.df["Date"] <= pd.to_datetime(currentTime)]
-            .tail(timeFrame)
-            .iloc[0]["Close"]
-            - self.df[
-                self.df["Date"]
-                <= pd.to_datetime(currentTime) - pd.Timedelta(timeFrame, unit="d")
+        return np.array(
+            [
+                self.df[self.df["Date"] <= time].tail(1).iloc[0]["Close"]
+                for time in pd.date_range(
+                    start=pd.to_datetime(currentTime)
+                    - pd.Timedelta(timeFrame, unit="d"),
+                    end=pd.to_datetime(currentTime),
+                    freq="D",
+                )
             ]
-            .tail(1)
-            .iloc[0]["Close"]
         )
+
+    # Interpolate the missing values in the stats dataframe
+    def interpolateStats(self, df: pd.DataFrame):
+        df = df.set_index("Date")
+        df = df.reindex(
+            pd.date_range(
+                start=df.index.min(),
+                end=df.index.max(),
+                freq="D",
+            )
+        )
+        df = df.interpolate(method="cubicspline", axis=0)
+        df = df.reset_index()
+        df = df.rename(columns={"index": "Date"})
+        return df
 
 
 class StockPile:
-    def __init__(self, name="StockPile", index=None):
+    def __init__(self, name="StockPile", index: pd.DataFrame = None):
         self.name = name
         self.stocks = []
         self.index = index
@@ -86,31 +109,39 @@ class StockPile:
             .iloc[0]["Close"]
         )
 
-    def calcIC(self, factor, currentTime, timeFrame=1):
-        factor = [stock.calcFactor(factor, currentTime) for stock in self.stocks]
-        alpha = [stock.calcReturn(currentTime, timeFrame) for stock in self.stocks]
-        return np.corrcoef(factor, alpha)[0][1] * 10
+    # Calculate the IC for a given factor in a given time
+    def calcIC(self, factor, currentTime, timeFrame=10):
+        IC = []
+        for stock in self.stocks:
+            fact = stock.calcFactor(factor, currentTime, timeFrame)
+            alpha = stock.calcReturn(currentTime, timeFrame)
+            IC.append(np.corrcoef(fact, alpha)[0, 1])
+        return np.mean(IC)
 
+    # Calculate the ICs for a given factor in a given time
+    # 1 day IC, 5 day IC, 10 day IC
     def calcICBulk(self, currentTime):
         return (
-            [self.calcIC(factor, currentTime, 1) for factor in FACTORS]
+            [self.calcIC(factor, currentTime, 3) for factor in FACTORS]
             + [self.calcIC(factor, currentTime, 5) for factor in FACTORS]
             + [self.calcIC(factor, currentTime, 10) for factor in FACTORS]
+            + [self.calcIC(factor, currentTime, 20) for factor in FACTORS]
         )
 
 
+# Create a dataframe of ICs for a given stockpile
 def createICDataFrame(stockPile, period):
     ic = []
     nextic = []
     date = []
 
     for i in trange(len(period)):
-        IC_append = stockPile.calcICBulk(period[i]) + [stockPile.getIndex(period[i])]
+        IC_append = stockPile.calcICBulk(period[i]) + [stockPile.getIndex(period[i]) - stockPile.getIndex(period[i] - pd.Timedelta(20, unit="d"))]
         nextIC_append = (
             [stockPile.calcIC(factor, period[i + 1]) for factor in FACTORS]
             if i < len(period) - 1
             else [
-                stockPile.calcIC(factor, period[i] + pd.Timedelta(days=7))
+                stockPile.calcIC(factor, period[i] + pd.Timedelta(days=10))
                 for factor in FACTORS
             ]
         )
@@ -122,10 +153,11 @@ def createICDataFrame(stockPile, period):
     Date = pd.DataFrame(date, columns=["Date"])
     IC_output = pd.DataFrame(
         ic,
-        columns=[factor + "1" for factor in FACTORS]
+        columns=[factor + "3" for factor in FACTORS]
         + [factor + "5" for factor in FACTORS]
         + [factor + "10" for factor in FACTORS]
-        + ["Index"],
+        + [factor + "20" for factor in FACTORS]
+        + ["20 Day Return"],
     )
     nextIC_output = pd.DataFrame(nextic, columns=FACTORS)
     icwithdate = pd.concat([Date, IC_output.iloc[:, 0:6]], axis=1)

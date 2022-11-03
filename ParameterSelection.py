@@ -11,8 +11,8 @@ plt.rcParams["font.family"] = "SF Pro Display"
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
-TRAIN_PERIOD = pd.date_range("2011-01-05", "2015-12-31", freq="7D")
-TEST_PERIOD = pd.date_range("2016-01-05", "2016-07-01", freq="7D")
+TRAIN_PERIOD = pd.date_range("2011-01-05", "2018-12-31", freq="10D")
+TEST_PERIOD = pd.date_range("2019-06-30", "2019-12-31", freq="10D")
 BASELINE_DATE = pd.to_datetime("2002-05-21")
 
 stocks = ["AAPL", "AXP", "AMGN", "BA", "CAT", "CVX", "CSCO", "GS"]
@@ -27,20 +27,20 @@ for stock in stocks:
     dow30.addStock(Stock(stock, df_price, df_stats))
 
 # Create the training data
-IC_train, nextIC_train = createICDataFrame(dow30, TRAIN_PERIOD)
-IC_test, nextIC_test = createICDataFrame(dow30, TEST_PERIOD)
+IC_train, nextIC_train, _ = createICDataFrame(dow30, TRAIN_PERIOD)
+IC_test, nextIC_test, _ = createICDataFrame(dow30, TEST_PERIOD)
 
 xgbModel_test = MultiOutputRegressor(XGBRegressor())
 gridTree = GridSearchCV(
     xgbModel_test,
     param_grid={
-        "estimator__n_estimators": [100],
-        "estimator__learning_rate": [0.02, 0.05, 0.08],
+        "estimator__n_estimators": [100, 200],
+        "estimator__learning_rate": [0.05],
         "estimator__max_depth": [3, 4, 5, 6],
-        "estimator__subsample": [0.4, 0.6, 0.8],
-        "estimator__colsample_bytree": [0.4, 0.6, 0.8],
-        "estimator__reg_lambda": [0, 10, 20],
-        "estimator__gamma": [0, 10, 20],
+        "estimator__subsample": [0.2, 0.4, 0.6],
+        "estimator__colsample_bytree": [0.2, 0.4, 0.6, 0.8, 1],
+        "estimator__reg_lambda": [10, 20],
+        "estimator__gamma": [10],
         "estimator__min_child_weight": [1, 2, 3],
         "estimator__colsample_bylevel": [0.6, 0.8, 1],
     },
