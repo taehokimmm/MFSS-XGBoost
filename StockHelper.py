@@ -110,38 +110,75 @@ class StockPile:
         )
 
     # Calculate the IC for a given factor in a given time
-    def calcIC(self, factor, currentTime, timeFrame=10):
+    def calcIC(self, factor, currentTime, slide=False, timeFrame=10, kernel=5):
         IC = []
+        if slide:
+            stride = 1
+        else:
+            stride = kernel
+
         for stock in self.stocks:
-            fact = stock.calcFactor(factor, currentTime, timeFrame)
-            alpha = stock.calcReturn(currentTime, timeFrame)
+            fact = avgPool(
+                stock.calcFactor(factor, currentTime, timeFrame + kernel),
+                kernel,
+                stride,
+            )
+            alpha = avgPool(
+                stock.calcReturn(currentTime, timeFrame + kernel), kernel, stride
+            )
             IC.append(np.corrcoef(fact, alpha)[0, 1])
         return np.mean(IC)
 
     # Calculate the ICs for a given factor in a given time
     # 1 day IC, 5 day IC, 10 day IC
-    def calcICBulk(self, currentTime):
-        return (
-            [self.calcIC(factor, currentTime, 3) for factor in FACTORS]
-            + [self.calcIC(factor, currentTime, 5) for factor in FACTORS]
-            + [self.calcIC(factor, currentTime, 10) for factor in FACTORS]
-            + [self.calcIC(factor, currentTime, 20) for factor in FACTORS]
-        )
+    def calcICBulk(self, currentTime, config=None):
+        IC = []
+        if config is None:
+            config = [[True, 1, 5], [True, 5, 5], [True, 10, 5]]
+        for _slide, _timeFrame, _kernel in config:
+            IC += [
+                self.calcIC(
+                    factor,
+                    currentTime,
+                    slide=_slide,
+                    timeFrame=_timeFrame,
+                    kernel=_kernel,
+                )
+                for factor in FACTORS
+            ]
+        return IC
 
 
 # Create a dataframe of ICs for a given stockpile
-def createICDataFrame(stockPile, period):
+def createICDataFrame(stockPile, period, config=None):
     ic = []
     nextic = []
     date = []
 
+    if config is None:
+        config = [[True, 1, 5], [True, 5, 5], [True, 10, 5]]
+
     for i in trange(len(period)):
-        IC_append = stockPile.calcICBulk(period[i]) + [stockPile.getIndex(period[i]) - stockPile.getIndex(period[i] - pd.Timedelta(20, unit="d"))]
+        IC_append = stockPile.calcICBulk(period[i], config) + [
+            stockPile.getIndex(period[i])
+            - stockPile.getIndex(period[i] - pd.Timedelta(20, unit="d"))
+        ]
         nextIC_append = (
-            [stockPile.calcIC(factor, period[i + 1]) for factor in FACTORS]
+            [
+                stockPile.calcIC(
+                    factor, period[i + 1], slide=True, timeFrame=10, kernel=5
+                )
+                for factor in FACTORS
+            ]
             if i < len(period) - 1
             else [
-                stockPile.calcIC(factor, period[i] + pd.Timedelta(days=10))
+                stockPile.calcIC(
+                    factor,
+                    period[i] + pd.Timedelta(days=10),
+                    slide=True,
+                    timeFrame=10,
+                    kernel=5,
+                )
                 for factor in FACTORS
             ]
         )
@@ -151,13 +188,15 @@ def createICDataFrame(stockPile, period):
             nextic.append(nextIC_append)
 
     Date = pd.DataFrame(date, columns=["Date"])
+    col = []
+    for _slide, _timeFrame, _kernel in config:
+        col += [
+            "{}_{}d_{}k{}".format(factor, _timeFrame, _kernel, "_slide" if _slide else "")
+            for factor in FACTORS
+        ]
     IC_output = pd.DataFrame(
         ic,
-        columns=[factor + "3" for factor in FACTORS]
-        + [factor + "5" for factor in FACTORS]
-        + [factor + "10" for factor in FACTORS]
-        + [factor + "20" for factor in FACTORS]
-        + ["20 Day Return"],
+        columns=col + ["20 Day Return"],
     )
     nextIC_output = pd.DataFrame(nextic, columns=FACTORS)
     icwithdate = pd.concat([Date, IC_output.iloc[:, 0:6]], axis=1)
@@ -167,3 +206,13 @@ def createICDataFrame(stockPile, period):
     )
     icwithdate = icwithdate.div(icwithdate.sum(axis=1), axis=0)
     return IC_output, nextIC_output, icwithdate
+
+
+# Average pool a given array
+def avgPool(arr: np.ndarray, kernel=1, stride=1):
+    arr = np.flip(arr)
+    return np.flip(
+        np.array(
+            [np.mean(arr[i : i + kernel]) for i in range(0, len(arr) - kernel, stride)]
+        )
+    )
